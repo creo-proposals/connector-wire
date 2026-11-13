@@ -262,6 +262,66 @@ describe.skipIf(!hasTestDb)("postgres (needs TEST_DATABASE_URL)", () => {
     expect(await outbox.get("ev-tx-1")).toBeNull();
     expect(await log.byRetryKey("p1", "retry-tx-00000000001")).toEqual([]);
   });
+
+  const strip = (rows: { id: number; at: Date }[]) => rows.map(({ id: _id, at: _at, ...r }) => r);
+
+  it("a lookup with the write's transaction sees what it appended; the pool sees it only once that commits", async () => {
+    const { log } = postgresStores(t.sql);
+    const entry = { pairing: "p1", keyId: "k1", retryKey: "retry-tx-00000000002", op: "x.hide", changed: true, before: { n: 1 }, after: { n: 2 } };
+    const seen = await t.sql.begin(async (tx) => {
+      await log.append(entry, tx);
+      return { inTx: await log.byRetryKey("p1", entry.retryKey, tx), onPool: await log.byRetryKey("p1", entry.retryKey) };
+    });
+    expect(strip(seen.inTx)).toEqual([entry]);
+    expect(seen.onPool).toEqual([]);
+    expect(strip(await log.byRetryKey("p1", entry.retryKey))).toEqual([entry]);
+  });
+
+  it("after a rollback neither a lookup on the pool nor one in a later transaction sees the entry", async () => {
+    const { log } = postgresStores(t.sql);
+    const entry = { pairing: "p1", keyId: "k1", retryKey: "retry-tx-00000000003", op: "x.hide", changed: true, before: null, after: null };
+    let inTx: unknown[] = [];
+    await expect(t.sql.begin(async (tx) => {
+      await log.append(entry, tx);
+      inTx = strip(await log.byRetryKey("p1", entry.retryKey, tx));
+      throw new Error("roll back");
+    })).rejects.toThrow("roll back");
+    expect(inTx).toEqual([entry]);
+    expect(await log.byRetryKey("p1", entry.retryKey)).toEqual([]);
+    expect(await t.sql.begin((tx) => log.byRetryKey("p1", entry.retryKey, tx))).toEqual([]);
+  });
+
+  it("with the transaction, a retry key is still looked up at its own pairing only", async () => {
+    const { log } = postgresStores(t.sql);
+    const mine = { pairing: "p1", keyId: "k1", retryKey: "retry-tx-00000000004", op: "x.hide", changed: true, before: { n: 1 }, after: { n: 2 } };
+    const theirs = { ...mine, pairing: "p2", before: { n: 7 }, after: { n: 8 } };
+    const seen = await t.sql.begin(async (tx) => {
+      await log.append(mine, tx);
+      await log.append(theirs, tx);
+      return Promise.all(["p1", "p2", "p3"].map((p) => log.byRetryKey(p, mine.retryKey, tx)));
+    });
+    expect(seen.map(strip)).toEqual([[mine], [theirs], []]);
+  });
+});
+
+describe("the log's lookup, given the write's transaction", () => {
+  // Compiled, never run: the two-argument lookup of 0.3.0 still compiles on every store, and a transaction is optional.
+  const _stillCompiles = (any: LogStore<unknown>, memory: ReturnType<typeof testLog>, pg: ReturnType<typeof postgresStores>["log"]) => [
+    any.byRetryKey("p1", "retry-ts-00000000001"),
+    memory.byRetryKey("p1", "retry-ts-00000000001"),
+    memory.byRetryKey("p1", "retry-ts-00000000001", undefined),
+    pg.byRetryKey("p1", "retry-ts-00000000001"),
+  ];
+  void _stillCompiles;
+
+  it("the in-memory log takes a transaction and ignores it, as its append does", async () => {
+    const log = testLog();
+    const entry = { pairing: "p1", keyId: "k1", retryKey: "retry-mem-0000000001", op: "x.hide", changed: true, before: null, after: null };
+    await log.append(entry, undefined);
+    expect((await log.byRetryKey("p1", entry.retryKey, undefined)).map(({ id: _id, at: _at, ...r }) => r)).toEqual([entry]);
+    expect((await log.byRetryKey("p1", entry.retryKey)).map(({ id: _id, at: _at, ...r }) => r)).toEqual([entry]);
+    expect(await log.byRetryKey("p2", entry.retryKey, undefined)).toEqual([]);
+  });
 });
 
 describe("one-use numbers, by a clock the test controls (contract section 3, step 7)", () => {
