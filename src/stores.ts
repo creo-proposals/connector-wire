@@ -109,8 +109,12 @@ export interface LogStore<Tx> {
   /**
    * The entries of one write, oldest first: by its pairing **and** its retry key, as the write itself was claimed. Retry keys are per
    * pairing, so the same key at another pairing is another write, and is never given back here.
+   *
+   * Pass `tx` when the lookup is part of a write (in an operation, `ctx.tx`; an undo looking up the entries it undoes): it then runs in
+   * that transaction, on its connection and in its snapshot, and sees entries the write appended that are not yet committed. Without
+   * `tx` it runs on its own and sees only committed entries.
    */
-  byRetryKey(pairing: string, retryKey: string): Promise<LoggedEntry[]>;
+  byRetryKey(pairing: string, retryKey: string, tx?: Tx): Promise<LoggedEntry[]>;
 }
 
 /** What an outbox sender does after one try: `null` is no answer at all (a timeout or a dropped connection). */

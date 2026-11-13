@@ -52,7 +52,8 @@ const hide: WireOperation<Tx> = {
     // ctx.marked: the run that asked had received outside text. This operation chooses not to act for such a run.
     if (ctx.marked) throw new WireRefusal("bad_input");
     // ctx.tx: a savepoint of the transaction that will also keep this write's answer under its retry key. Do the write with it, log it
-    // with it, add any outbox event with it: all of it commits with the answer, or none of it.
+    // with it, add any outbox event with it: all of it commits with the answer, or none of it. An undo looks up the entries it undoes
+    // with it too: `stores.log.byRetryKey(ctx.pairing, retryKey, ctx.tx)`.
     const rows = await ctx.tx!`UPDATE things SET hidden = true WHERE id = ${input.thingId as string} AND NOT hidden RETURNING id`;
     if (rows.length === 0) throw new WireRefusal("conflict"); // undoes anything done above; the refusal is kept as the answer
     await stores.log.append({ pairing: ctx.pairing, keyId: ctx.keyId, retryKey: ctx.retryKey!, op: "things.hide", changed: true,
@@ -186,6 +187,9 @@ new pairing.
 
 - `wire_log` is append-only: the table refuses UPDATE, DELETE and TRUNCATE, and nothing here removes a row. Keeping it, or ending
   that by a deliberate migration of the site's own, is the site owner's decision.
+- `log.byRetryKey(pairing, retryKey, tx?)` gives back one write's entries, oldest first, at its own pairing only. In a write (an undo
+  looking up what it undoes), pass `ctx.tx`: the lookup then runs in the write's transaction, on its connection and in its snapshot,
+  and sees what that transaction appended before it commits. Without `tx` it runs on the pool and sees only committed entries.
 - Run `forgetExpired({ nonces, answers, outbox }, new Date())` daily. It removes one-use numbers after 661 seconds (the contract's 601
   plus a margin), answers after 25 hours (the contract's 24 plus a margin: the app's clock and the database's differ), and sent events after 7 days (`sentKeepDays`). Unsent and dead events stay.
 
@@ -217,6 +221,12 @@ passes its own `fetch`. It never follows a redirect, waits at most 10 seconds an
 1 MiB. Anything that is not exactly an answer (a
 redirect, a body over the cap, bytes that are not UTF-8, a repeated key, data that does not fit, a code that is not one of the
 contract's) is read as `internal`, which is tried again later.
+
+## New in 0.3.1
+
+- `log.byRetryKey` takes the write's transaction as an optional third argument, as `log.append` does:
+  `byRetryKey(pairing, retryKey, tx?)`. An undo inside a write passes `ctx.tx` and needs no second connection. Calls with two
+  arguments work as before; nothing on the wire changes.
 
 ## Moving from 0.2
 
