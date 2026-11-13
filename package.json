@@ -1,0 +1,49 @@
+{
+  "name": "@creo-proposals/connector-wire",
+  "version": "0.3.0",
+  "description": "The connector wire contract v0: signing and checking requests, typed fields and describe, and the site side of a connection.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js",
+      "default": "./dist/postgres.js"
+    }
+  },
+  "files": [
+    "dist",
+    "sql",
+    "vectors",
+    "CONTRACT.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "postgres": "^3.4.9",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  },
+  "peerDependencies": {
+    "postgres": "^3.4.0"
+  },
+  "peerDependenciesMeta": {
+    "postgres": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,117 @@
+name: Release
+
+# On a version tag (v<package.json version>): build, pack, install-and-import the tarball, attest its build provenance, and attach it
+# to a GitHub release for that tag. Consumers install from the release's URL, with the integrity hash in their lockfile. No registry.
+# On a pull request that changes this workflow or what it packs: build, test, pack and both smoke tests, and stop there. Only a
+# released tarball is attested; a pull request's build is not a release and carries no provenance.
+# The tests run with a Postgres service, as CI's do: without one the store and rollback tests are skipped, and a release must not
+# be built from tests that did not run.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/smoke-tarball.sh'
+      - 'package.json'
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      tgz: ${{ steps.pack.outputs.tgz }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: wire_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d wire_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # The Postgres store tests run here; without it they are skipped.
+      TEST_DATABASE_URL: postgres://ci:ci@localhost:5432/wire_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: npm ci
+      - name: The tag is the package's version
+        if: github.event_name == 'push'
+        run: |
+          want="v$(node -p 'require("./package.json").version')"
+          [ "$GITHUB_REF_NAME" = "$want" ] || { echo "tag $GITHUB_REF_NAME is not $want"; exit 1; }
+      - run: npm run typecheck
+      - name: The tests have a database, so none is skipped for want of one
+        run: test -n "$TEST_DATABASE_URL"
+      - run: npm test
+      - run: npm run build
+      - name: Pack
+        id: pack
+        run: |
+          tgz="$(npm pack --silent)"
+          echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$tgz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - run: scripts/smoke-tarball.sh "${{ steps.pack.outputs.tgz }}" npm
+      - run: scripts/smoke-tarball.sh "${{ steps.pack.outputs.tgz }}" bun
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tarball
+          path: ${{ steps.pack.outputs.tgz }}
+          if-no-files-found: error
+
+  # A pushed version tag only. Not optional: if the attestation fails, nothing is released.
+  attest:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write       # signs the attestation
+      attestations: write   # stores it
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tarball
+      - name: The tarball is the one built
+        run: echo "${{ needs.build.outputs.sha256 }}  ${{ needs.build.outputs.tgz }}" | sha256sum -c -
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ${{ needs.build.outputs.tgz }}
+
+  release:
+    if: github.event_name == 'push'
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write       # creates the release and attaches the tarball
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tarball
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TGZ: ${{ needs.build.outputs.tgz }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          echo "$SHA256  $TGZ" | sha256sum -c -
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" "$TGZ" --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Install from this release's tarball URL; npm records its integrity hash in the lockfile. SHA-256: \`$SHA256\`. Build provenance: \`gh attestation verify $TGZ --repo $GITHUB_REPOSITORY\`."
