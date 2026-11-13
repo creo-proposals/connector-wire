@@ -131,8 +131,8 @@ export function postgresLog(sql: Sql): LogStore<Tx> {
         INSERT INTO wire_log (pairing, key_id, retry_key, op, changed, before, after)
         VALUES (${e.pairing}, ${e.keyId}, ${e.retryKey}, ${e.op}, ${e.changed}, ${json(tx, e.before ?? null)}, ${json(tx, e.after ?? null)})`;
     },
-    async byRetryKey(pairing, retryKey) {
-      const rows = await sql<{ id: string; at: Date; pairing: string; key_id: string; retry_key: string; op: string; changed: boolean; before: unknown; after: unknown }[]>`
+    async byRetryKey(pairing, retryKey, tx = sql) {
+      const rows = await tx<{ id: string; at: Date; pairing: string; key_id: string; retry_key: string; op: string; changed: boolean; before: unknown; after: unknown }[]>`
         SELECT id, at, pairing, key_id, retry_key, op, changed, before, after FROM wire_log
         WHERE pairing = ${pairing} AND retry_key = ${retryKey} ORDER BY id`;
       return rows.map((r): LoggedEntry => ({
